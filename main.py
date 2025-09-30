@@ -13,6 +13,8 @@ from kivy.utils import platform
 from kivy.config import Config
 from kivy.graphics import Color, Rectangle, Line, RoundedRectangle
 from kivy.animation import Animation
+from time import perf_counter
+from kivy.clock import Clock
 import random
 import os
 import json
@@ -32,19 +34,20 @@ POPUP_TITLE_SUCCESS = "Успех"
 
 # Цветовая схема - темная тема
 COLORS = {
-    'background': (0.1, 0.1, 0.1, 1),
-    'surface': (0.15, 0.15, 0.15, 1),
-    'primary': (0.2, 0.5, 0.8, 1),
-    'secondary': (0.3, 0.7, 0.5, 1),
-    'text_primary': (0.9, 0.9, 0.9, 1),
-    'text_secondary': (0.7, 0.7, 0.7, 1),
-    'card_front': (0.25, 0.35, 0.5, 1),
-    'card_back': (0.35, 0.5, 0.35, 1),
-    'success': (0.2, 0.7, 0.3, 1),
-    'warning': (0.9, 0.7, 0.1, 1),
-    'error': (0.8, 0.2, 0.2, 1),
-    'tab_active': (0.25, 0.55, 0.9, 1),
-    'tab_inactive': (0.15, 0.15, 0.15, 1),
+    'background': (0.07, 0.08, 0.1, 1),
+    'surface': (0.12, 0.13, 0.16, 1),
+    'primary': (0.27, 0.56, 0.95, 1),
+    'secondary': (0.26, 0.78, 0.54, 1),
+    'text_primary': (0.96, 0.97, 0.99, 1),
+    'text_secondary': (0.72, 0.76, 0.82, 1),
+    'card_front': (0.18, 0.24, 0.34, 1),
+    'card_back': (0.18, 0.3, 0.24, 1),
+    'success': (0.25, 0.8, 0.45, 1),
+    'warning': (0.98, 0.79, 0.17, 1),
+    'error': (0.92, 0.28, 0.33, 1),
+    'tab_active': (0.2, 0.25, 0.32, 1),
+    'tab_inactive': (0.12, 0.13, 0.16, 1),
+    'shadow': (0, 0, 0, 0.25)
 }
 
 # Настройки окна
@@ -114,6 +117,14 @@ class RoundedButton(Button):
         self.border_radius = dp(15)
 
         with self.canvas.before:
+            # Тень
+            Color(*COLORS['shadow'])
+            self.shadow_rect = RoundedRectangle(
+                pos=self.pos,
+                size=(self.size[0], self.size[1]),
+                radius=[self.border_radius]
+            )
+            # Фон
             Color(*COLORS['primary'])
             self.rect = RoundedRectangle(
                 pos=self.pos,
@@ -126,6 +137,8 @@ class RoundedButton(Button):
     def update_rect(self, *args):
         self.rect.pos = self.pos
         self.rect.size = self.size
+        self.shadow_rect.pos = (self.pos[0], self.pos[1] - dp(2))
+        self.shadow_rect.size = (self.size[0], self.size[1])
 
 
 # Кастомное текстовое поле с закругленными углами
@@ -133,12 +146,23 @@ class RoundedTextInput(TextInput):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.background_color = (0, 0, 0, 0)
+        self.background_normal = ''
+        self.background_active = ''
+        self.background_disabled_normal = ''
+        self.background_disabled_active = ''
         self.foreground_color = COLORS['text_primary']  # Цвет текста
-        self.cursor_color = COLORS['primary']
+        self.disabled_foreground_color = COLORS['text_secondary']
+        self.cursor_color = (1, 1, 1, 1)
+        self.cursor_blink = False
+        self.cursor_width = dp(3)
+        self.selection_color = (
+            COLORS['primary'][0], COLORS['primary'][1], COLORS['primary'][2], 0.35
+        )
         self.border_radius = dp(10)
-        self.padding = [dp(15), dp(10)]
+        self.padding = [dp(15), dp(10), dp(15), dp(10)]
         self.hint_text_color = COLORS['text_secondary']
         self.write_tab = False  # Отключаем табуляцию
+        self._saved_hint_text = self.hint_text
 
         with self.canvas.before:
             Color(*COLORS['surface'])
@@ -148,19 +172,98 @@ class RoundedTextInput(TextInput):
                 radius=[self.border_radius]
             )
             Color(*COLORS['primary'])
-            self.border_rect = RoundedRectangle(
-                pos=self.pos,
-                size=self.size,
-                radius=[self.border_radius]
+            self.border_line = Line(
+                rounded_rectangle=(self.pos[0], self.pos[1], self.size[0], self.size[1], self.border_radius),
+                width=1.5
             )
+        # Выше канваса (после canvas.before) курсор и текст рисуются корректно
 
         self.bind(pos=self.update_rect, size=self.update_rect)
+        self.bind(focus=self._on_focus_change)
+
+        # Пользовательский курсор поверх (на случай, если системный не виден)
+        with self.canvas.after:
+            self._caret_color = Color(1, 1, 1, 1)
+            self._caret = Rectangle(pos=self.pos, size=(dp(2), self.line_height))
+        self.bind(cursor_pos=self._update_caret, focus=self._update_caret, size=self._update_caret, text=self._update_caret)
+        self._caret_visible = True
+        self._blink_event = None
 
     def update_rect(self, *args):
         self.bg_rect.pos = self.pos
         self.bg_rect.size = self.size
-        self.border_rect.pos = (self.pos[0] - 1, self.pos[1] - 1)
-        self.border_rect.size = (self.size[0] + 2, self.size[1] + 2)
+        self.border_line.rounded_rectangle = (
+            self.pos[0], self.pos[1], self.size[0], self.size[1], self.border_radius
+        )
+
+    def _on_focus_change(self, _instance, value):
+        if value:
+            # На фокусе скрываем hint, чтобы был виден курсор
+            if self.text == '':
+                self._saved_hint_text = self.hint_text
+                self.hint_text = ''
+            # Запускаем мигание
+            self._start_caret_blink()
+        else:
+            # Без фокуса возвращаем hint, если поле пустое
+            if self.text == '' and self._saved_hint_text is not None:
+                self.hint_text = self._saved_hint_text
+            # Останавливаем мигание и прячем курсор
+            self._stop_caret_blink()
+        # Обновляем курсор при смене фокуса
+        self._update_caret()
+
+    def _update_caret(self, *args):
+        try:
+            if not hasattr(self, '_caret'):
+                return
+            if not self.focus:
+                # Скрываем кастомный курсор, если нет фокуса
+                self._caret.size = (0, 0)
+                return
+            cx, cy = self.cursor_pos
+            caret_width = dp(2)
+            caret_height = max(dp(14), self.line_height)
+            # Ограничиваем в границах виджета
+            cx = max(self.x + dp(2), min(cx, self.right - dp(2)))
+            cy = max(self.y + dp(2), min(cy, self.top - dp(2)))
+            self._caret.pos = (cx, cy - caret_height * 0.75)
+            self._caret.size = (caret_width, caret_height)
+            # При любом обновлении делаем курсор видимым и сбрасываем альфу
+            if hasattr(self, '_caret_color'):
+                self._caret_color.a = 1
+                self._caret_visible = True
+        except Exception:
+            pass
+
+    def _start_caret_blink(self):
+        try:
+            if self._blink_event is not None:
+                self._blink_event.cancel()
+            # Мигание каждые 0.5с
+            self._blink_event = Clock.schedule_interval(self._blink_tick, 0.5)
+        except Exception:
+            self._blink_event = None
+
+    def _stop_caret_blink(self):
+        try:
+            if self._blink_event is not None:
+                self._blink_event.cancel()
+                self._blink_event = None
+            # Скрываем курсор при потере фокуса
+            if hasattr(self, '_caret_color'):
+                self._caret_color.a = 0
+        except Exception:
+            pass
+
+    def _blink_tick(self, dt):
+        try:
+            if not self.focus or not hasattr(self, '_caret_color'):
+                return
+            self._caret_visible = not self._caret_visible
+            self._caret_color.a = 1 if self._caret_visible else 0
+        except Exception:
+            pass
 
 
 # Кастомное текстовое поле с автоматическим изменением высоты
@@ -174,6 +277,13 @@ class AutoHeightTextInput(RoundedTextInput):
         # Убедимся, что текст виден
         self.foreground_color = COLORS['text_primary']
         self.hint_text_color = COLORS['text_secondary']
+        self.cursor_color = (1, 1, 1, 1)
+        self.cursor_blink = False
+        self.cursor_width = dp(3)
+        self.background_color = (0, 0, 0, 0)
+        self.background_normal = ''
+        self.background_active = ''
+        # Отрисовка кастомного курсора уже унаследована из RoundedTextInput
 
     def on_text_change(self, _instance, _value):
         lines = len(self._lines)
@@ -189,13 +299,27 @@ class CustomTabbedPanelItem(TabbedPanelItem):
         super().__init__(**kwargs)
         self.background_color = COLORS['tab_inactive']
         self.color = COLORS['text_primary']
+        with self.canvas.before:
+            Color(*COLORS['shadow'])
+            self.shadow = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(10)])
+            Color(*self.background_color)
+            self.bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(10)])
         self.bind(state=self._update_color)
+        self.bind(pos=self._repaint, size=self._repaint)
 
     def _update_color(self, instance, value):
         if self.state == 'down':
             self.background_color = COLORS['tab_active']
         else:
             self.background_color = COLORS['tab_inactive']
+        self._repaint()
+
+    def _repaint(self, *args):
+        if hasattr(self, 'shadow') and hasattr(self, 'bg'):
+            self.shadow.pos = (self.pos[0], self.pos[1] - dp(1))
+            self.shadow.size = self.size
+            self.bg.pos = self.pos
+            self.bg.size = self.size
 
 
 # Улучшенный виджет карточки для обучения с адаптивным размером
@@ -207,19 +331,30 @@ class LearningCard(BoxLayout):
     def __init__(self, front_text, back_text, **kwargs):
         super().__init__(**kwargs)
         self.orientation = 'vertical'
-        self.size_hint = (0.9, None)
+        self.size_hint = (0.95, 1)
         self.pos_hint = {'center_x': 0.5, 'center_y': 0.5}
         self.padding = dp(20)
         self.spacing = dp(10)
-        self.bind(minimum_height=self.setter('height'))
 
         self.front_text = front_text
         self.back_text = back_text
         self.current_side = 'front'
         self.border_radius = dp(20)
+        self._tap_start_pos = None
+        self._start_scroll_y = None
+        self._did_scroll_move = False
+        self._tap_time_start = 0.0
 
         # Создаем фон карточки
         with self.canvas.before:
+            # Тень
+            Color(*COLORS['shadow'])
+            self.shadow = RoundedRectangle(
+                pos=(self.pos[0], self.pos[1] - dp(3)),
+                size=self.size,
+                radius=[self.border_radius]
+            )
+            # Карточка
             Color(*COLORS['card_front'])
             self.rect = RoundedRectangle(
                 pos=self.pos,
@@ -233,7 +368,14 @@ class LearningCard(BoxLayout):
             )
 
         # Прокручиваемый текст карточки
-        self.scroll_view = ScrollView(size_hint=(1, 1))
+        self.scroll_view = ScrollView(
+            size_hint=(1, 1),
+            bar_width=0,
+            do_scroll_x=False,
+            bar_color=(0, 0, 0, 0),
+            bar_inactive_color=(0, 0, 0, 0),
+            scroll_type=['content']
+        )
         self.card_label = Label(
             text=self.front_text,
             size_hint_y=None,
@@ -249,15 +391,28 @@ class LearningCard(BoxLayout):
         self.add_widget(self.scroll_view)
 
         self.bind(pos=self.update_graphics, size=self.update_graphics)
+        self.bind(size=self._update_label_width)
+        Clock.schedule_once(lambda dt: self._update_label_width(self, None), 0)
+
+        # На стороне вопроса (front) отключаем вертикальный скролл
+        self.scroll_view.do_scroll_y = False
 
     def _update_label_height(self, instance, value):
         instance.height = max(dp(100), value[1])
-        self.height = instance.height + dp(50)
+
+    def _update_label_width(self, _instance, _value):
+        padding_total = dp(40)
+        new_width = max(0, self.width - padding_total)
+        if self.card_label.text_size[0] != new_width:
+            self.card_label.text_size = (new_width, None)
 
     def update_graphics(self, *args):
         self.rect.pos = self.pos
         self.rect.size = self.size
         self.border.rounded_rectangle = (self.pos[0], self.pos[1], self.size[0], self.size[1], self.border_radius)
+        if hasattr(self, 'shadow'):
+            self.shadow.pos = (self.pos[0], self.pos[1] - dp(3))
+            self.shadow.size = self.size
 
     def flip_card(self):
         if self.current_side == 'front':
@@ -267,9 +422,17 @@ class LearningCard(BoxLayout):
             self.card_label.halign = 'left'
             self.card_label.bold = False
             self.card_label.font_size = dp(16)
+            # На стороне ответа включаем вертикальный скролл
+            self.scroll_view.do_scroll_y = True
 
             self.canvas.before.clear()
             with self.canvas.before:
+                Color(*COLORS['shadow'])
+                self.shadow = RoundedRectangle(
+                    pos=(self.pos[0], self.pos[1] - dp(3)),
+                    size=self.size,
+                    radius=[self.border_radius]
+                )
                 Color(*COLORS['card_back'])
                 self.rect = RoundedRectangle(
                     pos=self.pos,
@@ -288,9 +451,17 @@ class LearningCard(BoxLayout):
             self.card_label.halign = 'center'
             self.card_label.bold = True
             self.card_label.font_size = dp(18)
+            # На стороне вопроса отключаем вертикальный скролл
+            self.scroll_view.do_scroll_y = False
 
             self.canvas.before.clear()
             with self.canvas.before:
+                Color(*COLORS['shadow'])
+                self.shadow = RoundedRectangle(
+                    pos=(self.pos[0], self.pos[1] - dp(3)),
+                    size=self.size,
+                    radius=[self.border_radius]
+                )
                 Color(*COLORS['card_front'])
                 self.rect = RoundedRectangle(
                     pos=self.pos,
@@ -306,6 +477,92 @@ class LearningCard(BoxLayout):
         anim = Animation(opacity=0, duration=0.1) + Animation(opacity=1, duration=0.1)
         anim.start(self.card_label)
         anim.start(self.card_label)
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            in_scroll = self.scroll_view.collide_point(*touch.pos)
+            is_scrollable = self.card_label.height > self.scroll_view.height
+            # На стороне ответа: если тап начался внутри области скролла и контент скроллится,
+            # не считаем это началом «тапа для переворота»
+            if self.current_side == 'back' and is_scrollable and in_scroll:
+                return super().on_touch_down(touch)
+            self._tap_start_pos = touch.pos
+            self._start_scroll_y = self.scroll_view.scroll_y
+            self._did_scroll_move = False
+            self._tap_time_start = perf_counter()
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if self._tap_start_pos and self.collide_point(*touch.pos):
+            dx = abs(touch.pos[0] - self._tap_start_pos[0])
+            dy = abs(touch.pos[1] - self._tap_start_pos[1])
+            sc_delta = 0 if self._start_scroll_y is None else abs(self.scroll_view.scroll_y - self._start_scroll_y)
+            # Учитываем оверскролл по эффекту
+            effect_dist = 0
+            try:
+                if hasattr(self.scroll_view, 'effect_y') and self.scroll_view.effect_y is not None:
+                    effect_dist = abs(getattr(self.scroll_view.effect_y, 'distance', 0))
+            except Exception:
+                effect_dist = 0
+
+            if dy > dp(1) or sc_delta > 0.0005 or effect_dist > 0:
+                self._did_scroll_move = True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        handled = super().on_touch_up(touch)
+        # Если «тап для переворота» не был начат, выходим
+        if self._tap_start_pos is None:
+            return handled
+        if self._tap_start_pos and self.collide_point(*touch.pos):
+            dx = abs(touch.pos[0] - self._tap_start_pos[0])
+            dy = abs(touch.pos[1] - self._tap_start_pos[1])
+            sc_delta = 0 if self._start_scroll_y is None else abs(self.scroll_view.scroll_y - self._start_scroll_y)
+            # Если есть прокручиваемый контент и была вертикальная протяжка — блокируем переворот
+            is_scrollable = self.card_label.height > self.scroll_view.height
+            if is_scrollable and dy > dp(1):
+                self._did_scroll_move = True
+
+            tap_duration = perf_counter() - (self._tap_time_start or perf_counter())
+            in_scroll = self.scroll_view.collide_point(*touch.pos)
+            # Учитываем оверскролл по эффекту
+            effect_dist = 0
+            try:
+                if hasattr(self.scroll_view, 'effect_y') and self.scroll_view.effect_y is not None:
+                    effect_dist = abs(getattr(self.scroll_view.effect_y, 'distance', 0))
+            except Exception:
+                effect_dist = 0
+
+            # На стороне ответа: внутри ScrollView не переворачиваем, если был скролл/движение;
+            # На стороне вопроса: переворот по тапу везде (скролл отключен)
+            if self.current_side == 'back' and is_scrollable and in_scroll:
+                flip_allowed = (
+                    not self._did_scroll_move
+                    and dx < dp(5)
+                    and dy < dp(3)
+                    and sc_delta < 0.005
+                    and effect_dist == 0
+                    and tap_duration < 0.15
+                )
+            else:
+                flip_allowed = (
+                    not self._did_scroll_move
+                    and dx < dp(5)
+                    and dy < dp(3)
+                    and sc_delta < 0.005
+                    and tap_duration < 0.15
+                )
+
+            if flip_allowed:
+                self.flip_card()
+                self._tap_start_pos = None
+                self._start_scroll_y = None
+                self._did_scroll_move = False
+                return True
+        self._tap_start_pos = None
+        self._start_scroll_y = None
+        self._did_scroll_move = False
+        return handled
 
 
 class CardApp(App):
@@ -633,16 +890,11 @@ class LearningTab(BoxLayout):
 
     def _display_card(self, card):
         card_widget = LearningCard(front_text=card['front'], back_text=card['back'])
-        card_widget.bind(on_touch_down=self.on_card_touch)
         self.current_card_widget = card_widget
         self.card_area.add_widget(card_widget)
         self.update_counter()
 
-    def on_card_touch(self, instance, touch):
-        if instance.collide_point(*touch.pos):
-            self.flip_current_card()
-            return True
-        return False
+    # Переворот теперь обрабатывается внутри LearningCard, чтобы не мешать скроллу
 
     def flip_current_card(self):
         if self.current_card_widget:
@@ -710,7 +962,14 @@ class EditCardsTab(BoxLayout):
         self.add_widget(title_label)
 
     def _create_cards_list(self):
-        self.cards_scroll = ScrollView(size_hint=(1, 0.6))
+        self.cards_scroll = ScrollView(
+            size_hint=(1, 0.6),
+            bar_width=0,
+            do_scroll_x=False,
+            bar_color=(0, 0, 0, 0),
+            bar_inactive_color=(0, 0, 0, 0),
+            scroll_type=['content']
+        )
 
         # Добавляем фон для ScrollView
         with self.cards_scroll.canvas.before:
@@ -818,7 +1077,14 @@ class EditCardsTab(BoxLayout):
 
         with card_item.canvas.before:
             Color(*COLORS['surface'])
-            RoundedRectangle(pos=card_item.pos, size=card_item.size, radius=[dp(10)])
+            card_item.bg_rect = RoundedRectangle(pos=card_item.pos, size=card_item.size, radius=[dp(10)])
+
+        def _update_bg_rect(_instance, _value):
+            if hasattr(card_item, 'bg_rect'):
+                card_item.bg_rect.pos = card_item.pos
+                card_item.bg_rect.size = card_item.size
+
+        card_item.bind(pos=_update_bg_rect, size=_update_bg_rect)
 
         card_text = self._format_card_text(card)
         card_label = Label(
