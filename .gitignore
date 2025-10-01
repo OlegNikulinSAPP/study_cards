@@ -1,0 +1,55 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Kivy and Buildozer
+.kivy/
+buildozer.spec
+bin/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database files
+*.db
+*.sqlite3
+cards.json
+cards_export.json
+
+# Python packaging
+*.egg-info/
+.eggs/
+
+# Buildozer dependencies
+.buildozer/
+
+# Android
+*.apk
+*.aab
+.AndroidStudio/
+app/build/
+
+# iOS
+*.ipa
+
+.idea

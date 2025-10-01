@@ -8,7 +8,7 @@ from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
 from kivy.core.window import Window
 from kivy.uix.popup import Popup
 from kivy.metrics import dp
-from kivy.properties import NumericProperty, StringProperty, ListProperty, BooleanProperty
+from kivy.properties import NumericProperty, StringProperty
 from kivy.utils import platform
 from kivy.config import Config
 from kivy.graphics import Color, Rectangle, Line, RoundedRectangle
@@ -134,7 +134,7 @@ class RoundedButton(Button):
 
         self.bind(pos=self.update_rect, size=self.update_rect)
 
-    def update_rect(self, *args):
+    def update_rect(self, *_):
         self.rect.pos = self.pos
         self.rect.size = self.size
         self.shadow_rect.pos = (self.pos[0], self.pos[1] - dp(2))
@@ -185,11 +185,12 @@ class RoundedTextInput(TextInput):
         with self.canvas.after:
             self._caret_color = Color(1, 1, 1, 1)
             self._caret = Rectangle(pos=self.pos, size=(dp(2), self.line_height))
-        self.bind(cursor_pos=self._update_caret, focus=self._update_caret, size=self._update_caret, text=self._update_caret)
+        self.bind(cursor_pos=self._update_caret, focus=self._update_caret, size=self._update_caret,
+                  text=self._update_caret)
         self._caret_visible = True
         self._blink_event = None
 
-    def update_rect(self, *args):
+    def update_rect(self, *_):
         self.bg_rect.pos = self.pos
         self.bg_rect.size = self.size
         self.border_line.rounded_rectangle = (
@@ -213,28 +214,43 @@ class RoundedTextInput(TextInput):
         # Обновляем курсор при смене фокуса
         self._update_caret()
 
-    def _update_caret(self, *args):
+    def _update_caret(self, *_):
+        """
+        Оптимизированная версия обновления курсора.
+        Минимальные проверки для частого вызова.
+        """
         try:
-            if not hasattr(self, '_caret'):
+            # Быстрые проверки условий
+            if not hasattr(self, '_caret') or not self.focus:
+                if hasattr(self, '_caret'):
+                    self._caret.size = (0, 0)
                 return
-            if not self.focus:
-                # Скрываем кастомный курсор, если нет фокуса
-                self._caret.size = (0, 0)
-                return
+
+            # Основная логика с базовой проверкой ошибок
             cx, cy = self.cursor_pos
             caret_width = dp(2)
             caret_height = max(dp(14), self.line_height)
-            # Ограничиваем в границах виджета
+
+            # Безопасное ограничение границ
             cx = max(self.x + dp(2), min(cx, self.right - dp(2)))
             cy = max(self.y + dp(2), min(cy, self.top - dp(2)))
+
             self._caret.pos = (cx, cy - caret_height * 0.75)
             self._caret.size = (caret_width, caret_height)
-            # При любом обновлении делаем курсор видимым и сбрасываем альфу
+
             if hasattr(self, '_caret_color'):
                 self._caret_color.a = 1
                 self._caret_visible = True
-        except Exception:
+
+        except (AttributeError, ReferenceError):
+            # Тихая обработка - виджет разрушен
             pass
+        except (TypeError, ValueError) as ex:
+            # Ошибки вычислений координат
+            Logger.debug(f"Caret position error: {ex}")
+        except Exception as ex:
+            # Критические ошибки
+            Logger.error(f"Critical caret error: {ex}")
 
     def _start_caret_blink(self):
         try:
@@ -242,8 +258,12 @@ class RoundedTextInput(TextInput):
                 self._blink_event.cancel()
             # Мигание каждые 0.5с
             self._blink_event = Clock.schedule_interval(self._blink_tick, 0.5)
-        except Exception:
-            self._blink_event = None
+        except (AttributeError, ValueError) as ex:
+            # Конкретные ожидаемые ошибки
+            Logger.debug(f"Caret update issue: {ex}")
+        except Exception as ex:
+            # Критические ошибки логируем, но не прерываем работу
+            Logger.error(f"Unexpected error in caret update: {ex}")
 
     def _stop_caret_blink(self):
         try:
@@ -253,17 +273,27 @@ class RoundedTextInput(TextInput):
             # Скрываем курсор при потере фокуса
             if hasattr(self, '_caret_color'):
                 self._caret_color.a = 0
-        except Exception:
-            pass
+        except (AttributeError, ReferenceError) as ex:
+            # Ожидаемые ошибки, связанные с атрибутами или ссылками
+            Logger.debug(f"Caret blink stop issue: {ex}")
+        except Exception as ex:
+            # Неожиданные ошибки логируем для отладки
+            Logger.warning(f"Unexpected error stopping caret blink: {ex}")
 
-    def _blink_tick(self, dt):
+    def _blink_tick(self, *_):
+        """
+        Callback для мигания курсора. Принимает любые аргументы для совместимости.
+        """
         try:
             if not self.focus or not hasattr(self, '_caret_color'):
                 return
             self._caret_visible = not self._caret_visible
             self._caret_color.a = 1 if self._caret_visible else 0
-        except Exception:
-            pass
+        except (AttributeError, ReferenceError):
+            self._stop_caret_blink()
+        except Exception as ex:
+            Logger.error(f"Unexpected error in blink tick: {ex}")
+            self._stop_caret_blink()
 
 
 # Кастомное текстовое поле с автоматическим изменением высоты
@@ -307,14 +337,18 @@ class CustomTabbedPanelItem(TabbedPanelItem):
         self.bind(state=self._update_color)
         self.bind(pos=self._repaint, size=self._repaint)
 
-    def _update_color(self, instance, value):
+    def _update_color(self, *_):
+        """
+        Универсальный обработчик изменения состояния вкладки.
+        Работает с любым количеством переданных аргументов.
+        """
         if self.state == 'down':
             self.background_color = COLORS['tab_active']
         else:
             self.background_color = COLORS['tab_inactive']
         self._repaint()
 
-    def _repaint(self, *args):
+    def _repaint(self, *_):
         if hasattr(self, 'shadow') and hasattr(self, 'bg'):
             self.shadow.pos = (self.pos[0], self.pos[1] - dp(1))
             self.shadow.size = self.size
@@ -335,6 +369,10 @@ class LearningCard(BoxLayout):
         self.pos_hint = {'center_x': 0.5, 'center_y': 0.5}
         self.padding = dp(20)
         self.spacing = dp(10)
+        self._tap_start_pos = None
+        self._start_scroll_y = None
+        self._did_scroll_move = False
+        self._tap_time_start = 0.0
 
         self.front_text = front_text
         self.back_text = back_text
@@ -397,7 +435,8 @@ class LearningCard(BoxLayout):
         # На стороне вопроса (front) отключаем вертикальный скролл
         self.scroll_view.do_scroll_y = False
 
-    def _update_label_height(self, instance, value):
+    @staticmethod
+    def _update_label_height(instance, value):
         instance.height = max(dp(100), value[1])
 
     def _update_label_width(self, _instance, _value):
@@ -406,7 +445,7 @@ class LearningCard(BoxLayout):
         if self.card_label.text_size[0] != new_width:
             self.card_label.text_size = (new_width, None)
 
-    def update_graphics(self, *args):
+    def update_graphics(self, *_):
         self.rect.pos = self.pos
         self.rect.size = self.size
         self.border.rounded_rectangle = (self.pos[0], self.pos[1], self.size[0], self.size[1], self.border_radius)
@@ -494,30 +533,83 @@ class LearningCard(BoxLayout):
 
     def on_touch_move(self, touch):
         if self._tap_start_pos and self.collide_point(*touch.pos):
-            dx = abs(touch.pos[0] - self._tap_start_pos[0])
+            # Вычисляем только необходимые перемещения
             dy = abs(touch.pos[1] - self._tap_start_pos[1])
-            sc_delta = 0 if self._start_scroll_y is None else abs(self.scroll_view.scroll_y - self._start_scroll_y)
-            # Учитываем оверскролл по эффекту
+
+            # Вычисляем разницу в прокрутке
+            sc_delta = 0
+            if self._start_scroll_y is not None:
+                sc_delta = abs(self.scroll_view.scroll_y - self._start_scroll_y)
+
+            # Учитываем оверскролл по эффекту с безопасной проверкой
             effect_dist = 0
             try:
-                if hasattr(self.scroll_view, 'effect_y') and self.scroll_view.effect_y is not None:
-                    effect_dist = abs(getattr(self.scroll_view.effect_y, 'distance', 0))
-            except Exception:
-                effect_dist = 0
+                if (hasattr(self.scroll_view, 'effect_y') and
+                        self.scroll_view.effect_y is not None and
+                        hasattr(self.scroll_view.effect_y, 'distance')):
+                    effect_dist = abs(self.scroll_view.effect_y.distance)
+            except (AttributeError, TypeError) as ex:
+                # Логируем только неожиданные ошибки доступа к атрибутам
+                Logger.debug(f"Error accessing scroll effect: {ex}")
 
+            # Определяем, было ли движение скроллом
             if dy > dp(1) or sc_delta > 0.0005 or effect_dist > 0:
                 self._did_scroll_move = True
+
         return super().on_touch_move(touch)
+
+    def _reset_tap_state(self):
+        """Сбрасывает состояние касания для жестов переворота"""
+        self._tap_start_pos = None
+        self._start_scroll_y = None
+        self._did_scroll_move = False
+
+    def _get_overscroll_distance(self):
+        """Безопасно получает расстояние оверскролла"""
+        try:
+            if (hasattr(self.scroll_view, 'effect_y') and
+                    self.scroll_view.effect_y is not None):
+                return abs(getattr(self.scroll_view.effect_y, 'distance', 0))
+        except (AttributeError, TypeError):
+            pass
+        return 0
+
+    def _should_flip_card(self, dx, dy, sc_delta, effect_dist, tap_duration, is_scrollable, in_scroll):
+        """Определяет, разрешен ли переворот карточки"""
+        # Базовые условия переворота
+        base_conditions = (
+                not self._did_scroll_move and
+                dx < dp(5) and
+                dy < dp(3) and
+                sc_delta < 0.005 and
+                effect_dist == 0 and
+                tap_duration < 0.15
+        )
+
+        # На стороне ответа: внутри ScrollView применяем дополнительные ограничения
+        if self.current_side == 'back' and is_scrollable and in_scroll:
+            # Более строгие условия для области с контентом
+            return base_conditions and not self._did_scroll_move
+        else:
+            # Стандартные условия для других случаев
+            return base_conditions
 
     def on_touch_up(self, touch):
         handled = super().on_touch_up(touch)
+
         # Если «тап для переворота» не был начат, выходим
         if self._tap_start_pos is None:
             return handled
-        if self._tap_start_pos and self.collide_point(*touch.pos):
+
+        if not self.collide_point(*touch.pos):
+            self._reset_tap_state()
+            return handled
+
+        try:
             dx = abs(touch.pos[0] - self._tap_start_pos[0])
             dy = abs(touch.pos[1] - self._tap_start_pos[1])
             sc_delta = 0 if self._start_scroll_y is None else abs(self.scroll_view.scroll_y - self._start_scroll_y)
+
             # Если есть прокручиваемый контент и была вертикальная протяжка — блокируем переворот
             is_scrollable = self.card_label.height > self.scroll_view.height
             if is_scrollable and dy > dp(1):
@@ -525,44 +617,57 @@ class LearningCard(BoxLayout):
 
             tap_duration = perf_counter() - (self._tap_time_start or perf_counter())
             in_scroll = self.scroll_view.collide_point(*touch.pos)
-            # Учитываем оверскролл по эффекту
-            effect_dist = 0
-            try:
-                if hasattr(self.scroll_view, 'effect_y') and self.scroll_view.effect_y is not None:
-                    effect_dist = abs(getattr(self.scroll_view.effect_y, 'distance', 0))
-            except Exception:
-                effect_dist = 0
 
-            # На стороне ответа: внутри ScrollView не переворачиваем, если был скролл/движение;
-            # На стороне вопроса: переворот по тапу везде (скролл отключен)
-            if self.current_side == 'back' and is_scrollable and in_scroll:
-                flip_allowed = (
-                    not self._did_scroll_move
-                    and dx < dp(5)
-                    and dy < dp(3)
-                    and sc_delta < 0.005
-                    and effect_dist == 0
-                    and tap_duration < 0.15
-                )
-            else:
-                flip_allowed = (
-                    not self._did_scroll_move
-                    and dx < dp(5)
-                    and dy < dp(3)
-                    and sc_delta < 0.005
-                    and tap_duration < 0.15
-                )
+            # Учитываем оверскролл по эффекту с безопасной проверкой
+            effect_dist = self._get_overscroll_distance()
+
+            # Определяем условия для переворота
+            flip_allowed = self._should_flip_card(
+                dx, dy, sc_delta, effect_dist, tap_duration,
+                is_scrollable, in_scroll
+            )
 
             if flip_allowed:
                 self.flip_card()
-                self._tap_start_pos = None
-                self._start_scroll_y = None
-                self._did_scroll_move = False
+                self._reset_tap_state()
                 return True
-        self._tap_start_pos = None
-        self._start_scroll_y = None
-        self._did_scroll_move = False
+
+        except (AttributeError, ReferenceError) as ex:
+            # Ошибки доступа к атрибутам (виджет может быть разрушен)
+            Logger.debug(f"Touch up handling error: {ex}")
+        except Exception as ex:
+            # Неожиданные ошибки логируем для отладки
+            Logger.error(f"Unexpected error in touch up: {ex}")
+        finally:
+            # Всегда сбрасываем состояние касания
+            self._reset_tap_state()
+
         return handled
+
+    def _is_quick_tap(self, dx, dy):
+        """Определяет, был ли быстрый тап (а не скролл)"""
+        sc_delta = 0 if self._start_scroll_y is None else abs(self.scroll_view.scroll_y - self._start_scroll_y)
+        effect_dist = self._get_overscroll_distance()
+        tap_duration = perf_counter() - (self._tap_time_start or perf_counter())
+
+        is_scrollable = self.card_label.height > self.scroll_view.height
+        in_scroll = self.scroll_view.collide_point(*self._tap_start_pos) if self._tap_start_pos else False
+
+        # Базовые условия для быстрого тапа
+        conditions = (
+                not self._did_scroll_move and
+                dx < dp(5) and
+                dy < dp(3) and
+                sc_delta < 0.005 and
+                effect_dist == 0 and
+                tap_duration < 0.15
+        )
+
+        # Дополнительные ограничения для скроллируемой области на обратной стороне
+        if self.current_side == 'back' and is_scrollable and in_scroll:
+            return conditions and not self._did_scroll_move
+
+        return conditions
 
 
 class CardApp(App):
@@ -864,7 +969,8 @@ class LearningTab(BoxLayout):
         learned_count = len(self.learned_cards)
 
         if self.current_card_index < len(self.all_cards):
-            self.counter_label.text = f'Карточка: {self.current_card_index + 1}/{total_cards} | Выучено: {learned_count}'
+            self.counter_label.text = (f'Карточка: {self.current_card_index + 1}/{total_cards} | Выучено: '
+                                       f'{learned_count}')
         else:
             self.counter_label.text = f'Повторение: {cards_in_review} карточек | Выучено: {learned_count}'
 
@@ -983,7 +1089,7 @@ class EditCardsTab(BoxLayout):
         self.cards_scroll.add_widget(self.cards_layout)
         self.add_widget(self.cards_scroll)
 
-    def _update_scroll_bg(self, *args):
+    def _update_scroll_bg(self, *_):
         if hasattr(self, 'scroll_bg'):
             self.scroll_bg.pos = self.cards_scroll.pos
             self.scroll_bg.size = self.cards_scroll.size
