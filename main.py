@@ -59,7 +59,7 @@ else:
 
 Window.clearcolor = COLORS['background']
 
-# Определяем путь к файлу карточек!
+# Определяем путь к файлу карточек
 if platform == 'android':
     try:
         from android.storage import app_storage_path  # type: ignore
